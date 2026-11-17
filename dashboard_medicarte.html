@@ -626,11 +626,14 @@ function expandir(t) {
    ===================================================================================== */
 const apiConfigurada = () => /^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[\w-]+\/exec$/.test(CONFIG.API_URL.trim());
 async function api(accion, datos = {}) {
+  const ctrl = new AbortController();
+  const limite = setTimeout(() => ctrl.abort(), 120000); // máximo 2 minutos de espera
   const r = await fetch(CONFIG.API_URL.trim(), {
-    method: 'POST', redirect: 'follow', credentials: 'omit', cache: 'no-store',
+    method: 'POST', redirect: 'follow', credentials: 'omit', cache: 'no-store', signal: ctrl.signal,
     headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // evita la verificación previa CORS
     body: JSON.stringify(Object.assign({ accion, token: S.token }, datos)),
   });
+  clearTimeout(limite);
   let c = null;
   try { c = await r.json(); } catch (e) { /* respuesta no JSON */ }
   if (!r.ok || !c) return { ok: false, status: r.status || 0, cuerpo: { error: 'El servicio de datos no respondió correctamente.' } };
@@ -719,6 +722,7 @@ async function cargar(forzar, primera) {
   S.cargando = true;
   $('btn-actualizar').disabled = true;
   if (primera) $('cargando').classList.remove('oculto');
+  const aviso = setTimeout(() => { $('cargando-txt').textContent = 'PREPARANDO DATOS · PUEDE TARDAR HASTA 1 MINUTO'; }, 8000);
   try {
     const r = await api('datos', { refrescar: !!forzar });
     if (r.status === 401) {
@@ -731,8 +735,11 @@ async function cargar(forzar, primera) {
   } catch (e) {
     // Se conserva la última información válida en pantalla.
     pintarConexion('err', S.datos ? 'Sin conexión · mostrando última información válida' : 'Sin conexión');
-    mostrarBanner((S.datos ? 'No se pudo actualizar. Se mantiene la última información válida. ' : '') + (e.message || ''));
+    const msg = e.name === 'AbortError' ? 'El servidor de datos tardó demasiado en responder. Intente de nuevo con ↻ Actualizar.' : (e.message === 'Failed to fetch' ? 'No hay conexión con el servicio de datos (Apps Script).' : (e.message || ''));
+    mostrarBanner((S.datos ? 'No se pudo actualizar. Se mantiene la última información válida. ' : '') + msg);
   } finally {
+    clearTimeout(aviso);
+    $('cargando-txt').textContent = 'CARGANDO DATOS';
     S.cargando = false;
     $('btn-actualizar').disabled = false;
     $('cargando').classList.add('oculto');
