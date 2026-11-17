@@ -391,7 +391,7 @@ tbody tr:hover { background: var(--gris); }
       <section data-modulo="novedades">
         <div class="nota" id="nota-novedades"></div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-          <label class="interruptor"><input type="checkbox" id="chk-perif"><i></i>Contar periféricas dentro del % de novedades</label>
+          <span></span>
         </div>
         <div class="grid-kpi" id="kpi-novedades"></div>
         <div class="grid g-2-1">
@@ -760,7 +760,10 @@ function pintarConexion(tipo, texto) {
 function aplicarDatos(d) {
   const serv = expandir(d.servicios);
   const malla = expandir(d.malla).map((r) => {
-    r.cats = r.cs ? r.cs.split(';').map((x) => { const [c, s, o] = x.split('|'); return { c, s, o }; }) : [];
+    const todas = r.cs ? r.cs.split(';').map((x) => { const [c, s, o] = x.split('|'); return { c, s, o }; }) : [];
+    // Las periféricas son un tipo de ruta, no una novedad: no se cuentan en ningún indicador de novedades.
+    r.perif = todas.some((x) => x.c === 'periferica' && x.o === 'observacion');
+    r.cats = todas.filter((x) => x.c !== 'periferica');
     return r;
   });
 
@@ -876,7 +879,7 @@ const FILTROS_SELECT = {
   'f-ciudad': { k: 'ciudad', opciones: () => uniq(S.serv.map((r) => r.ci)), etiqueta: titulo },
   'f-zona': { k: 'zona', opciones: () => uniq(S.serv.map((r) => r.lo || '(SIN LOCALIDAD)')), etiqueta: titulo },
   'f-sede': { k: 'sede', opciones: () => uniq(S.malla.map((r) => r.se)), etiqueta: titulo },
-  'f-cat': { k: 'cat', opciones: () => Object.keys(S.datos.categorias), etiqueta: (v) => S.datos.categorias[v] },
+  'f-cat': { k: 'cat', opciones: () => Object.keys(S.datos.categorias).filter((c) => c !== 'periferica'), etiqueta: (v) => S.datos.categorias[v] },
 };
 function uniq(a) { return [...new Set(a.filter((x) => x !== '' && x != null))].sort((x, y) => String(x).localeCompare(String(y), 'es')); }
 
@@ -908,7 +911,7 @@ $('btn-limpiar').addEventListener('click', () => {
   document.querySelectorAll('.filtro.activo').forEach((x) => x.classList.remove('activo'));
   renderizar();
 });
-$('chk-perif').addEventListener('change', (e) => { S.inclPerif = e.target.checked; renderizar(); });
+
 $('sla-min').addEventListener('input', (e) => { const v = Number(e.target.value); S.sla = v > 0 ? v : null; if (S.modulo === 'tiempos') renderTiempos(); });
 ['cmp-a', 'cmp-b'].forEach((id) => $(id).addEventListener('change', () => renderPeriodos()));
 
@@ -1253,7 +1256,7 @@ function renderNovedades() {
   meses.forEach((rows, m) => { const n = rows.filter(esNovedad).length; if (!mesMax || n > mesMax[1]) mesMax = [m, n]; });
 
   $('nota-novedades').innerHTML = `<b>Cómo se cuenta:</b> cada fila de MALLA es un registro de programación (un recurso en un día). Una fila se cuenta <b>una sola vez</b> como "registro con novedad", aunque tenga varias categorías.
-    Las <b>periféricas</b> se muestran aparte y no se suman al % de novedades salvo que active el interruptor. Fuente de las reglas: <b>${S.datos.reglas.origen === 'hoja' ? 'pestaña REGLAS del Google Sheet' : 'reglas predeterminadas'}</b>.
+    Las <b>periféricas</b> no se cuentan como novedad: son un tipo de ruta. <b>Pendiente de clasificación</b> = observación escrita en la MALLA cuyo texto no coincide con ninguna regla (revíselas en "Reglas de clasificación"). Fuente de las reglas: <b>${S.datos.reglas.origen === 'hoja' ? 'pestaña REGLAS del Google Sheet' : 'reglas predeterminadas'}</b>.
     ${catSel ? `<br>Filtrando por: <span class="chip-cat">${esc(cats[catSel])} <button type="button" id="quitar-cat" aria-label="Quitar">×</button></span>` : ''}`;
   const q = $('quitar-cat'); if (q) q.addEventListener('click', () => seleccionarCategoria(catSel));
 
@@ -1266,7 +1269,6 @@ function renderNovedades() {
     { t: cats.personal, v: fmtN(k.personal), s: fmtP(pct(k.personal, k.total)) + ' de los registros' },
     { t: cats.ajuste, v: fmtN(k.ajuste), s: fmtP(pct(k.ajuste, k.total)) + ' de los registros' },
     { t: cats.logistica, v: fmtN(k.logistica), s: fmtP(pct(k.logistica, k.total)) + ' de los registros' },
-    { t: cats.periferica, v: fmtN(k.periferica), s: 'Se reportan por separado' },
     { t: cats.pendiente, v: fmtN(k.pendiente), s: 'Sin regla que coincida: revisar reglas' },
     { t: 'Mes con más novedades', v: mesMax && mesMax[1] ? etiquetaMes(mesMax[0]) : '—', s: mesMax && mesMax[1] ? fmtN(mesMax[1]) + ' registros con novedad' : '' },
   ]);
@@ -1409,8 +1411,12 @@ function renderServicios() {
   const porDia = [...contar(sv, (r) => r.f).entries()].sort((a, b) => a[0].localeCompare(b[0]));
   grafico('g-serv-dia', {
     type: 'line',
-    data: { labels: porDia.map((p) => p[0]), datasets: [{ label: 'Servicios', data: porDia.map((p) => p[1]), borderColor: CONFIG.COLORES.azul, backgroundColor: 'rgba(11,77,162,.08)', fill: true, pointRadius: 0, borderWidth: 1.5, tension: 0.2 }] },
-    options: { plugins: { legend: { display: false } }, scales: ejesSuaves({ x: { ticks: { maxTicksLimit: 10 } } }) },
+    // Hasta ~2 meses se rotula cada día (dd/mm); en rangos más largos Chart.js espacia las etiquetas para que se lean.
+    data: { labels: porDia.map((p) => p[0].slice(8, 10) + '/' + p[0].slice(5, 7)), datasets: [{ label: 'Servicios', data: porDia.map((p) => p[1]), borderColor: CONFIG.COLORES.azul, backgroundColor: 'rgba(11,77,162,.08)', fill: true, pointRadius: porDia.length <= 62 ? 3 : 0, pointHoverRadius: 5, borderWidth: 1.5, tension: 0.2 }] },
+    options: {
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: (it) => { const f = porDia[it[0].dataIndex][0]; return new Date(f + 'T12:00:00').toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' }); } } } },
+      scales: ejesSuaves({ x: { ticks: porDia.length <= 62 ? { autoSkip: false, maxRotation: 90, minRotation: 90, font: { size: 10 } } : { maxTicksLimit: 15 } } }),
+    },
   });
   barrasH('g-serv-causas', ordenarMapa(contar(sv.filter((r) => r.nv), (r) => titulo(r.nv))), CONFIG.COLORES.rosa, 'Servicios');
   dona('g-serv-alcance', ordenarMapa(contar(sv.filter((r) => r.es !== 'ENTREGADO'), (r) => titulo(r.al || 'Sin dato'))), [CONFIG.COLORES.warn, CONFIG.COLORES.bad, CONFIG.COLORES.gris]);
@@ -1484,7 +1490,7 @@ function renderCalidad() {
     { t: 'Recursos en ambas pestañas', v: `${c.cruce.comunes} de ${c.cruce.recursosMalla}`, s: 'Cruce por documento (seudonimizado)', estado: c.cruce.comunes === c.cruce.recursosMalla ? 'ok' : 'warn' },
   ]);
   const ml = S.malla, k = kpisMalla(ml);
-  const perif = ml.filter((r) => r.cats.some((x) => x.c === 'periferica' && x.o === 'observacion')).length;
+  const perif = ml.filter((r) => r.perif).length;
   const ref = c.referenciaInicial || {};
   const filas = [
     ['Registros de MALLA', ref.malla_registros, k.total],
